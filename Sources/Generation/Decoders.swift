@@ -18,9 +18,13 @@ func selectNextTokenUsingGreedyDecoding(from scores: MLTensor) -> MLTensor {
 /// (temperature, top-k, top-p, etc. already applied).
 ///
 /// - Parameter scores: Processed logits tensor [batch_size, vocab_size]
+/// - Parameter draw: Unit-interval sample in `0..<1`. Defaults to `Float.random(in: 0..<1)`.
 /// - Returns: Sampled token ID tensor [batch_size, 1]
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, visionOS 2.0, watchOS 11.0, *)
-func selectNextTokenUsingSampling(from scores: MLTensor) async -> MLTensor {
+func selectNextTokenUsingSampling(
+    from scores: MLTensor,
+    draw: @escaping @Sendable () -> Float = { Float.random(in: 0..<1) }
+) async -> MLTensor {
     // Convert logits to probabilities
     let probs = scores.softmax(alongAxis: -1)
 
@@ -40,15 +44,15 @@ func selectNextTokenUsingSampling(from scores: MLTensor) async -> MLTensor {
         let row = cdf[(batch * vocabSize)..<((batch + 1) * vocabSize)]
         // Scale the draw by the total mass to be robust to floating-point
         // rounding in the last CDF entry.
-        let rnd = Float.random(in: 0..<1) * (row.last ?? 1)
+        let rnd = draw() * (row.last ?? 1)
 
         // Binary search for the first index whose cumulative probability
-        // reaches the drawn value.
+        // exceeds the drawn value (advance on lesser or equal CDF).
         var low = row.startIndex
         var high = row.endIndex - 1
         while low < high {
             let mid = (low + high) / 2
-            if row[mid] < rnd {
+            if row[mid] <= rnd {
                 low = mid + 1
             } else {
                 high = mid

@@ -356,6 +356,51 @@ final class GenerationIntegrationTests: XCTestCase {
         let tokenId = await sampled.shapedArray(of: Int32.self).scalars.first
         XCTAssertEqual(tokenId, Int32(vocabSize - 1), "Sampling must select the only token with probability mass, never token 65536")
     }
+
+    func testSamplingZeroDrawOnLargeVocabularySelectsOnlyPositiveMass() async throws {
+        // Draw 0 is inside Float.random(in: 0..<1). Impossible tokens are -infinity
+        // so their mass is exact zero. The only finite logit sits past index 65,536
+        // and is not the final index.
+        let vocabSize = 65_539
+        let target = 65_537
+        var logits = [Float](repeating: -Float.infinity, count: vocabSize)
+        logits[target] = 0
+
+        let scores = MLTensor(shape: [1, vocabSize], scalars: logits, scalarType: Float.self)
+        let sampled = await selectNextTokenUsingSampling(from: scores, draw: { Float(0) })
+
+        XCTAssertEqual(sampled.shape, [1, 1], "Sampled token should have shape [1, 1]")
+        let tokenIds = await sampled.shapedArray(of: Int32.self).scalars
+        XCTAssertEqual(tokenIds, [Int32(target)], "Sampling must select the only positive-mass token")
+    }
+
+    func testSamplingExactInteriorCDFPlateauSelectsNextPositiveToken() async throws {
+        // Equal finite logits around one impossible token. Softmax mass is
+        // [0.5, 0, 0.5], so the CDF plateau is exactly [0.5, 0.5, 1].
+        let logits: [Float] = [0, -Float.infinity, 0]
+        let scores = MLTensor(shape: [1, logits.count], scalars: logits, scalarType: Float.self)
+        let sampled = await selectNextTokenUsingSampling(from: scores, draw: { Float(0.5) })
+
+        XCTAssertEqual(sampled.shape, [1, 1], "Sampled token should have shape [1, 1]")
+        let tokenIds = await sampled.shapedArray(of: Int32.self).scalars
+        XCTAssertEqual(tokenIds, [Int32(2)], "An exact CDF tie must select the next positive token")
+    }
+
+    func testSamplingBatchLeadingZeroMassAtDrawZero() async throws {
+        // Genuine leading zero mass on every row. Draw 0 must not select those tokens.
+        let logits: [Float] = [
+            -Float.infinity, -Float.infinity, 0, -Float.infinity,
+            -Float.infinity, 0, -Float.infinity, -Float.infinity,
+            -Float.infinity, -Float.infinity, -Float.infinity, 0,
+        ]
+        let scores = MLTensor(shape: [3, 4], scalars: logits, scalarType: Float.self)
+        let sampled = await selectNextTokenUsingSampling(from: scores, draw: { Float(0) })
+
+        XCTAssertEqual(sampled.shape, [3, 1], "Sampled tokens should have shape [batch, 1]")
+        XCTAssertTrue(sampled.scalarType == Int32.self, "Sampled tokens should be Int32")
+        let tokenIds = await sampled.shapedArray(of: Int32.self).scalars
+        XCTAssertEqual(tokenIds, [Int32(2), Int32(1), Int32(3)], "Each row should select its first positive-mass token")
+    }
 }
 
 // MARK: - Test Helper
